@@ -1,2 +1,2 @@
 # lvm-thin-backup
-This utility create backups for lvm thin volumes and automatically remove backup if needed.
+This utility creates backups for lvm thin volumes. It can also monitor space usage and delete old backups automatically.
