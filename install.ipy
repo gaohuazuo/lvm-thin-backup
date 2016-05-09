@@ -1,0 +1,17 @@
+#! /usr/local/bin/ipython3
+
+import os
+
+%cd {os.path.dirname(os.path.abspath(__file__))}
+
+!jupyter nbconvert --to python lvm-thin-backup.ipynb
+
+with open('lvm-thin-backup.py', 'r+') as f:
+    orig = f.read()
+    f.seek(0)
+    f.write('#! /usr/bin/python3\n' + orig)
+
+!chmod 755 lvm-thin-backup.py
+
+%cp lvm-thin-backup.py /usr/local/bin
+
