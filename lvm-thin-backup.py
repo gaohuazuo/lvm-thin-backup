@@ -2,7 +2,7 @@
 
 # coding: utf-8
 
-# In[42]:
+# In[3]:
 
 import logging
 import logging.handlers
@@ -11,16 +11,20 @@ import subprocess
 import time
 import re
 import traceback
+import os
+import errno
 
 
 # ## Constants
 
-# In[40]:
+# In[2]:
 
 TIME_FORMAT = '%Y-%m-%d_%Hh-%Mm-%Ss'
 BACKUP_SUFFIX = 'BACKUP'
 SYSLOG_ADDRESS =  '/dev/log'
 LOGGING_FMT = '%(module)s[%(process)d]:%(levelname)s:%(message)s'
+UNIQUE_ID = 'lvm-thin-backup-7e2ce2e4-7274-4a5b-9fda-cdc8e052cfd4'
+TMP_DIR = '/tmp'
 
 
 # ## Exceptions
@@ -284,7 +288,25 @@ def watch_handler(args):
         kwargs['interval'] = args.check_interval
     if args.min_backup is not None:
         kwargs['min_backup'] = args.min_backup
-    watch(**kwargs)
+    if len(args.thin_pool.split('/')) == 2:
+        escaped_pool_name = args.thin_pool.replace('-', '--').replace('/', '-')
+        if check_name(escaped_pool_name):
+            pid_file_path = os.path.join(
+                TMP_DIR, '%s.%s.pid' % (UNIQUE_ID, escaped_pool_name)
+            )
+            try:
+                pid_file = open(pid_file_path, 'x')
+            except FileExistsError:
+                logging.error('pid file exists: %s', pid_file_path)
+                return
+            try:
+                with pid_file:
+                    pid_file.write(str(os.getpid()))
+                watch(**kwargs)
+            finally:
+                os.remove(pid_file_path)
+            return
+    logging.error('Invalid volume name: %s', args.thin_pool)
 
 
 # In[27]:
