@@ -9,6 +9,7 @@ import re
 import traceback
 import os
 
+import pid
 import daemon
 
 
@@ -246,8 +247,8 @@ def watch_handler(args):
         escaped_pool_name = args.thin_pool.replace('-', '--').replace('/', '-')
         if check_name(escaped_pool_name):
             daemon_context = daemon.DaemonContext(
-                pidfile=os.path.join('/var/run', '%s.%s.pid' %
-                                     (UNIQUE_ID, escaped_pool_name)))
+                pidfile=pid.PidFile(
+                    '{}.{}'.format(UNIQUE_ID, escaped_pool_name)))
             with daemon_context:
                 watch(args.thin_pool, options, policy)
             return
