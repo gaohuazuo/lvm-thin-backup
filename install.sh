@@ -1,4 +1,4 @@
-#! /usr/bin/bash
+#! /bin/bash
 
 INSTALL_PATH=/usr/local/lvm-thin-backup
 
