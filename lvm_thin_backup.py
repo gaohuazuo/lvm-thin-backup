@@ -1,9 +1,5 @@
 #! /usr/bin/python3
 
-# coding: utf-8
-
-# In[3]:
-
 import logging
 import logging.handlers
 import argparse
@@ -12,44 +8,36 @@ import time
 import re
 import traceback
 import os
-import errno
+
+import daemon
 
 
-# ## Constants
-
-# In[2]:
+# Constants
 
 TIME_FORMAT = '%Y-%m-%d_%Hh-%Mm-%Ss'
 BACKUP_SUFFIX = 'BACKUP'
-SYSLOG_ADDRESS =  '/dev/log'
+SYSLOG_ADDRESS = '/dev/log'
 LOGGING_FMT = '%(module)s[%(process)d]:%(levelname)s:%(message)s'
 UNIQUE_ID = 'lvm-thin-backup-7e2ce2e4-7274-4a5b-9fda-cdc8e052cfd4'
 TMP_DIR = '/tmp'
 
 
-# ## Exceptions
+# Exceptions
 
-# In[3]:
-
-class CouldBeBugError(RuntimeError):
+class FatalError(RuntimeError):
     pass
-
-
-# In[47]:
 
 class NoRemovableBackupError(RuntimeError):
     pass
 
 
-# ## Helpers
-
-# In[5]:
+# Helpers
 
 def check_output(cmd, **kwargs):
     '''
     Almost the same as subprocess.check_output(), except for some
-    default args. 
-    
+    default args.
+
     Return:
     (stdout, stderr)
     '''
@@ -63,13 +51,9 @@ def check_output(cmd, **kwargs):
     return p.communicate()
 
 
-# In[6]:
-
 def get_backup_name(lvname):
     return '%s_%s_%s_%s' % (lvname, BACKUP_SUFFIX, time.strftime(TIME_FORMAT), time.time())
 
-
-# In[7]:
 
 def parse_backup_name(snapshot_name):
     match = re.search('^(.*)_([0-9]+(?:\\.[0-9]+)?)$', snapshot_name)
@@ -89,19 +73,15 @@ def parse_backup_name(snapshot_name):
     return float(match.group(2))
 
 
-# In[8]:
-
 def check_name(name):
     '''Check whether name is a valid lvm lv or vg name'''
     return re.match(r'^[a-zA-Z0-9+_.][a-zA-Z0-9+_.\-]*$', name) is not None
 
 
-# In[9]:
-
 def lvs(fields):
     '''
     The lvs command.
-    
+
     Note:
     The returned fields should contain no escaped character
     nor the following:
@@ -123,24 +103,16 @@ def lvs(fields):
         if re.fullmatch('\\s*' + '\\s+'.join(i[0] for i in matches) + '\\s*',
                         line) is None:
             logging.critical('Parse of lvs output failed: %s', line)
-            raise CouldBeBugError
+            raise FatalError
         line_result = {fields_map[i[1].lower().replace('_', '')]:
                        i[2][1:-1] for i in matches}
         if set(line_result.keys()) != set(fields):
             logging.critical('lvs did not return all fields queried, '
                              'which is unexpected.')
-            raise CouldBeBugError
+            raise FatalError
         result[line_result.pop('lv_fullname')] = line_result
     return result
 
-
-# In[10]:
-
-def get_data_usage(pool_fullname):
-    lvs_output
-
-
-# In[11]:
 
 def backup(targets):
     if isinstance(targets, str):
@@ -163,7 +135,7 @@ def backup(targets):
         backup_name = get_backup_name(lv_shortname)
         backup_fullname = '%s/%s' % (vg_name, backup_name)
         cmd = ['lvcreate', '-s', lv_fullname, '-n', backup_name, '-y']
-        logging.info('Creating snapshot: %s' % backup_name)
+        logging.info('Creating snapshot: %s', backup_name)
         stdout, stderr = check_output(cmd)
         if stderr:
             logging.warning('lvcreate wrote something to stderr:\n%s', stderr)
@@ -174,9 +146,7 @@ def backup(targets):
                           backup_name, lv_fullname)
 
 
-# In[48]:
-
-def release_space(pool_fullname, min_backup):
+def release_space(pool_fullname, policy):
     '''
     Remove the oldest backup within the thin pool, whose removal does not
     break the minimum number of backup requirement.
@@ -202,7 +172,9 @@ def release_space(pool_fullname, min_backup):
     # Remove the oldest removable backup
     backups.sort()
     for timestamp, lv_fullname in backups:
-        if counts[lvs_output[lv_fullname]['origin']] <= min_backup:
+        if time.time() - timestamp < policy.min_time:
+            continue
+        if counts[lvs_output[lv_fullname]['origin']] <= policy.min_count:
             continue
         cmd = ['lvremove', lv_fullname, '-y']
         stdout, stderr = check_output(cmd)
@@ -217,21 +189,12 @@ def release_space(pool_fullname, min_backup):
         raise NoRemovableBackupError
 
 
-# In[13]:
-
-def watch(pool_fullname, limit=0.9, interval=60, min_backup=1):
-    limit = float(limit)
-    interval = float(interval)
-    min_backup = int(min_backup)
-    if interval <= 0:
-        logging.error('Interval is smaller than 0.')
+def watch(pool_fullname, options, policy):
+    if options.interval <= 0:
+        logging.error('Interval is smaller than 0: %s.', options.interval)
         return
-    if limit >= 1 or limit <= 0:
-        logging.error('Limit is not between 0 and 1.')
-        return
-    if min_backup < 0:
-        logging.error('Minimum backup to keep is set to lower than 0: %s',
-                      min_backup)
+    if options.limit >= 1 or options.limit <= 0:
+        logging.error('Limit is not between 0 and 1: %s.', options.limit)
         return
     while True:
         lvs_output = lvs(['data_percent', 'lv_attr'])
@@ -242,18 +205,16 @@ def watch(pool_fullname, limit=0.9, interval=60, min_backup=1):
         if fields['lv_attr'][0] != 't':
             logging.error('Not a thin pool: %s', pool_fullname)
             return
-        if float(fields['data_percent']) / 100 > limit:
+        if float(fields['data_percent']) / 100 > options.limit:
             try:
-                release_space(pool_fullname, min_backup)
+                release_space(pool_fullname, policy)
             except NoRemovableBackupError:
-                time.sleep(interval)
+                time.sleep(options.interval)
         else:
-            time.sleep(interval)
+            time.sleep(options.interval)
 
 
-# ## Command line interface
-
-# In[41]:
+# Command line interface
 
 def setup_logging(args):
     kwargs = {}
@@ -276,40 +237,22 @@ def setup_logging(args):
     logging.basicConfig(**kwargs)
 
 
-# In[25]:
-
 def watch_handler(args):
     setup_logging(args)
-    kwargs = {}
-    kwargs['pool_fullname'] = args.thin_pool
-    if args.limit:
-        kwargs['limit'] = args.limit
-    if args.check_interval:
-        kwargs['interval'] = args.check_interval
-    if args.min_backup is not None:
-        kwargs['min_backup'] = args.min_backup
+    options = argparse.Namespace(interval=args.check_interval, limit=args.limit)
+    policy = argparse.Namespace(min_count=args.min_keep_count,
+                                min_time=args.min_keep_time)
     if len(args.thin_pool.split('/')) == 2:
         escaped_pool_name = args.thin_pool.replace('-', '--').replace('/', '-')
         if check_name(escaped_pool_name):
-            pid_file_path = os.path.join(
-                TMP_DIR, '%s.%s.pid' % (UNIQUE_ID, escaped_pool_name)
-            )
-            try:
-                pid_file = open(pid_file_path, 'x')
-            except FileExistsError:
-                logging.error('pid file exists: %s', pid_file_path)
-                return
-            try:
-                with pid_file:
-                    pid_file.write(str(os.getpid()))
-                watch(**kwargs)
-            finally:
-                os.remove(pid_file_path)
+            daemon_context = daemon.DaemonContext(
+                pidfile=os.path.join('/var/run', '%s.%s.pid' %
+                                     (UNIQUE_ID, escaped_pool_name)))
+            with daemon_context:
+                watch(args.thin_pool, options, policy)
             return
     logging.error('Invalid volume name: %s', args.thin_pool)
 
-
-# In[27]:
 
 def backup_handler(args):
     setup_logging(args)
@@ -318,8 +261,6 @@ def backup_handler(args):
     else:
         backup(args.lv)
 
-
-# In[34]:
 
 def main():
     parser = argparse.ArgumentParser()
@@ -337,9 +278,10 @@ def main():
     # Subcommand `watch`
     parser_watch = subparsers.add_parser('watch', parents=[common_parser])
     parser_watch.add_argument('thin_pool')
-    parser_watch.add_argument('--limit', '-l', type=float)
-    parser_watch.add_argument('--check-interval', '-i', type=float)
-    parser_watch.add_argument('--min-backup', '-m', type=int)
+    parser_watch.add_argument('--limit', '-l', type=float, default=0.9)
+    parser_watch.add_argument('--check-interval', '-i', type=float, default=60)
+    parser_watch.add_argument('--min-keep-count', '-c', type=int, default=1)
+    parser_watch.add_argument('--min-keep-time', '-t', type=float, default=86400)
     parser_watch.set_defaults(func=watch_handler)
 
     # Subcommand `backup`
@@ -353,8 +295,6 @@ def main():
     if hasattr(args, 'func'):
         args.func(args)
 
-
-# In[45]:
 
 if __name__ == '__main__':
     try:
